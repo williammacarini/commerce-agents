@@ -3,6 +3,8 @@
 
 from datetime import datetime
 
+import pytest
+
 from commerce_common.types import MemoryCategory, MemoryFact
 from demo_common.storefront_fixtures import load_json
 from retail.api.mock_retail import (
@@ -21,6 +23,26 @@ def test_catalog_loads_and_validates(backend):
     sample = backend.products["AR-1201"]
     assert sample.brand == "ACME Basecamp"
     assert sample.long_description  # hero products carry a long description
+
+
+async def test_mercadopago_currency_is_applied_to_catalog_and_cart(monkeypatch, session):
+    pytest.importorskip("mercadopago")
+    pytest.importorskip("mercadopago_commerce_agents")
+    monkeypatch.setenv("MERCADOPAGO_ACCESS_TOKEN", "test-token")
+    monkeypatch.setenv("MERCADOPAGO_CURRENCY_ID", "BRL")
+    backend = MockRetail()
+
+    assert {product.currency for product in backend.products.values()} == {"BRL"}
+    assert {product.currency for product in backend.variants.values()} == {"BRL"}
+    assert (await backend.get_cart(session)).currency == "BRL"
+
+
+def test_mercadopago_token_requires_an_explicit_currency(monkeypatch):
+    monkeypatch.setenv("MERCADOPAGO_ACCESS_TOKEN", "test-token")
+    monkeypatch.delenv("MERCADOPAGO_CURRENCY_ID", raising=False)
+
+    with pytest.raises(ValueError, match="MERCADOPAGO_CURRENCY_ID"):
+        MockRetail()
 
 
 async def test_search_relevance(backend, session):

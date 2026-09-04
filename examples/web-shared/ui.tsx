@@ -85,7 +85,8 @@ export function Avatar({ name }: { name: string }) {
   return (
     <span
       aria-hidden
-      className="grid h-[30px] w-[30px] shrink-0 place-items-center rounded-full bg-(--well) text-[12px] font-semibold text-(--ink) shadow-[inset_0_0_0_1px_var(--line)]"
+      className="grid h-[30px] w-[30px] shrink-0 place-items-center rounded-full bg-(--well) text-[12px] font-semibold text-(--ink)"
+      style={{ boxShadow: "inset 0 0 0 1px var(--line)" }}
     >
       {initials}
     </span>

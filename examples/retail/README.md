@@ -26,6 +26,27 @@ Chat needs `ANTHROPIC_API_KEY` in the repo-root `.env` or the environment; brows
 catalog and the portal's widgets do not. `MERCHANT_REQUIRE_HOST_APPROVAL=0` lets a chat
 approval apply a change; by default the preview card's button applies it.
 
+### Optional Mercado Pago Checkout Pro
+
+Install the checkout adapter from the reviewed commit while the package is not yet on
+PyPI:
+
+```bash
+pip install "mercadopago-commerce-agents-checkout @ git+https://github.com/mercadopago/commerce-agent-checkout.git@51768d3e451a78ee0ea9eaba44a819e6c9c3130e"
+```
+
+Then configure the test seller token, its currency, and a test buyer from the same site
+in the repo-root `.env`:
+
+```bash
+MERCADOPAGO_ACCESS_TOKEN=
+MERCADOPAGO_CURRENCY_ID=BRL
+MERCADOPAGO_TEST_BUYER_EMAIL=
+```
+
+The adapter is loaded only when `MERCADOPAGO_ACCESS_TOKEN` is present. Without it, the
+example keeps its built-in checkout card.
+
 ## Try
 
 Storefront (`scripts/smoke_chat.py --vertical retail` runs the same three turns):

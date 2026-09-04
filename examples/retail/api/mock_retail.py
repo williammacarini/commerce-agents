@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,7 @@ from demo_common.storefront_fixtures import (
 )
 from shopping_agent import (
     Cart,
+    CheckoutHandoff,
     FulfillmentOption,
     Order,
     Policy,
@@ -120,8 +122,61 @@ class MockRetail(StorefrontBackend):
         self._orders = load_orders(data_dir)
         self._policies = load_policies(data_dir)
         self._carts = SessionCarts()
+        token = os.environ.get("MERCADOPAGO_ACCESS_TOKEN")
+        checkout_currency = os.environ.get("MERCADOPAGO_CURRENCY_ID")
+        if token and not checkout_currency:
+            raise ValueError("MERCADOPAGO_CURRENCY_ID is required with MERCADOPAGO_ACCESS_TOKEN")
+        self._checkout_currency = checkout_currency or "USD"
+        if token:
+            self._stamp_checkout_currency()
         self._stamp_delivery_promises()
         self._stamp_low_stock(data_dir)
+        # Wires Mercado Pago Checkout Pro (Orders API) into the demo's `checkout` card.
+        # The new package no longer reads the environment itself, so the caller builds
+        # the SDK and skips construction entirely with no token — checkout_handoff then
+        # just returns [] and the demo's own checkout card takes over, same as upstream.
+        payer_email = os.environ.get("MERCADOPAGO_TEST_BUYER_EMAIL")
+        self._checkout_payer_email = payer_email
+        if token:
+            try:
+                import mercadopago
+                from mercadopago_commerce_agents import MercadoPagoCheckout
+            except ImportError as exc:
+                raise RuntimeError(
+                    "Mercado Pago checkout packages are required when "
+                    "MERCADOPAGO_ACCESS_TOKEN is configured"
+                ) from exc
+            self.mercadopago = MercadoPagoCheckout(
+                sdk=mercadopago.SDK(token),
+                catalog=self,
+                currency=self._checkout_currency,
+                attempt_id_provider=self._checkout_attempt_id,
+                payer_email_provider=(self._payer_email_for_checkout if payer_email else None),
+            )
+        else:
+            self.mercadopago = None
+
+    def _stamp_checkout_currency(self) -> None:
+        """Make the displayed demo catalog match the seller account used at checkout."""
+        for product in (*self.products.values(), *self.variants.values()):
+            product.currency = self._checkout_currency
+
+    def _configured_cart(self, cart: Cart) -> Cart:
+        """Return the same cart with the currency displayed by the configured catalog."""
+        return cart.model_copy(update={"currency": self._checkout_currency})
+
+    async def _payer_email_for_checkout(self, session: ShoppingSessionContext) -> str | None:
+        """Use only the explicitly configured test buyer; never model-authored data."""
+        del session
+        return self._checkout_payer_email
+
+    async def _checkout_attempt_id(self, session: ShoppingSessionContext, cart: Cart) -> str:
+        """A durable id for one confirmed cart snapshot: stable across retries of the
+        same items and quantities, different once the cart changes."""
+        snapshot = [[item.product_id, item.quantity] for item in cart.items]
+        canonical = json.dumps(snapshot, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha256(f"{session.session_id}:{canonical}".encode()).hexdigest()
+        return f"attempt-{digest}"
 
     def _stamp_delivery_promises(self) -> None:
         """A "Get it by <day>" attribute on every in-stock product: boot date plus a
@@ -292,7 +347,7 @@ class MockRetail(StorefrontBackend):
     # ------------------------------------------------------------------
 
     async def get_cart(self, session: ShoppingSessionContext) -> Cart:
-        return self._carts.cart(session.session_id)
+        return self._configured_cart(self._carts.cart(session.session_id))
 
     async def add_to_cart(
         self, session: ShoppingSessionContext, product_id: str, quantity: int
@@ -306,15 +361,17 @@ class MockRetail(StorefrontBackend):
             raise Unavailable(unavailable_detail(product, self.listing_of(product_id)))
         existing = self._carts.lines(session.session_id).get(product_id)
         quantity += existing.quantity if existing else 0
-        return self._carts.put(session.session_id, product, quantity)
+        return self._configured_cart(self._carts.put(session.session_id, product, quantity))
 
     async def update_cart_item(
         self, session: ShoppingSessionContext, product_id: str, quantity: int
     ) -> Cart:
-        return self._carts.set_quantity(session.session_id, product_id, quantity)
+        return self._configured_cart(
+            self._carts.set_quantity(session.session_id, product_id, quantity)
+        )
 
     async def remove_from_cart(self, session: ShoppingSessionContext, product_id: str) -> Cart:
-        return self._carts.remove(session.session_id, product_id)
+        return self._configured_cart(self._carts.remove(session.session_id, product_id))
 
     def reset_session(self, session_id: str) -> None:
         self._carts.reset(session_id)
@@ -325,6 +382,13 @@ class MockRetail(StorefrontBackend):
 
     async def get_preferences(self, session: ShoppingSessionContext) -> UserPreferences:
         return preferences_of(self._users, session.user_id)
+
+    async def checkout_handoff(
+        self, session: ShoppingSessionContext, cart: Cart
+    ) -> list[CheckoutHandoff]:
+        if self.mercadopago is None:
+            return []
+        return await self.mercadopago.checkout_handoff(session, cart)  # type: ignore[return-value]
 
     async def get_orders(self, session: ShoppingSessionContext, limit: int = 5) -> list[Order]:
         return orders_for(self._orders, session.user_id, limit)
